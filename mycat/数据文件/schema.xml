@@ -1,0 +1,62 @@
+<?xml version="1.0"?>
+<!DOCTYPE mycat:schema SYSTEM "schema.dtd">
+<mycat:schema xmlns:mycat="http://io.mycat/">
+
+	<schema name="db_store" checkSQLschema="false" sqlMaxLimit="100">
+		<table name="store" dataNode="db_store_dataNode" primaryKey="storeID"/>
+		<table name="employee" dataNode="db_store_dataNode" primaryKey="employeeID"/>
+	</schema>
+	
+	
+	<schema name="db_user" checkSQLschema="false" sqlMaxLimit="100">
+		<table name="data_dictionary" type="global" dataNode="db_user_dataNode1,db_user_dataNode2" primaryKey="dataDictionaryID"/>
+		<table name="users" dataNode="db_user_dataNode$1-2"  rule="mod-userID-long" primaryKey="userID">
+			<childTable name="user_address"  joinKey="userID" parentKey="userID" primaryKey="addressID"/>
+		</table>
+	</schema>
+	
+	
+	<!-- 节点配置 -->
+	<!-- db_store -->
+	<dataNode name="db_store_dataNode" dataHost="db_storeHOST" database="db_store" />
+	
+	<!-- db_user -->
+	<dataNode name="db_user_dataNode1" dataHost="db_userHOST1" database="db_user" />
+	<dataNode name="db_user_dataNode2" dataHost="db_userHOST2" database="db_user" />
+	
+	
+	
+	
+	<!-- 节点主机配置 -->
+	<!-- 配置db_store的节点主机 -->
+	<dataHost name="db_storeHOST" maxCon="1000" minCon="10" balance="1"
+			  writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+		<heartbeat>select user()</heartbeat>
+		<!-- can have multi write hosts -->
+		<writeHost host="hostM1" url="192.168.8.137:3306" user="root"  password="123456">
+			<!-- can have multi read hosts -->
+			<readHost host="hostS1" url="192.168.8.101:3306" user="root" password="123456" />
+		
+		
+		</writeHost>
+		
+	</dataHost>
+	
+	
+	<!-- 配置db_user的节点主机 -->
+	<dataHost name="db_userHOST1" maxCon="1000" minCon="10" balance="0"
+			  writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+		<heartbeat>select user()</heartbeat>
+		<writeHost host="userHost1" url="192.168.8.137:3306" user="root"  password="123456">
+		</writeHost>
+	</dataHost>
+	
+	<dataHost name="db_userHOST2" maxCon="1000" minCon="10" balance="0"
+			  writeType="0" dbType="mysql" dbDriver="native" switchType="1"  slaveThreshold="100">
+		<heartbeat>select user()</heartbeat>
+		<!-- can have multi write hosts -->
+		<writeHost host="userHost2" url="192.168.8.101:3306" user="root"  password="123456">
+		</writeHost>
+	</dataHost>
+	
+</mycat:schema>
