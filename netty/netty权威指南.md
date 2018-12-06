@@ -832,3 +832,458 @@ ChannelPipeline根据事件类型调度并执行相应的ChannelHandler
 io.netty.channel.DefaultChannelPipeline
 ```
 
+# channel
+
+## 主要设计理念
+
+* 通过Facade模式进行统一封装，将网络I/O操作及其他相关操作封装起来，统一对外提供
+* Channel接口的定义大而全，为socketChannel和ServerSocketChannel提供了统一的视图，由不同的子类实现不同的功能，公共功能在抽象父类中实现。最大程度地实现了功能和接口的重用。
+* 具体实现采用聚合而非包含的方式，由Channel统一负责分配和调度，功能实现更加灵活。
+
+## channel工作原理
+
+![1543906079220](netty权威指南.assets/1543906079220.png)
+
+## channel源码
+
+![](netty权威指南.assets/NioServerSocketChannel.png)
+
+![](netty权威指南.assets/NioSocketChannel.png)
+
+### AbstractChannel
+
+```java
+public abstract class AbstractChannel extends DefaultAttributeMap implements Channel {
+
+    private static final InternalLogger logger = InternalLoggerFactory.getInstance(AbstractChannel.class);
+	//刷新关闭异常	
+    private static final ClosedChannelException FLUSH0_CLOSED_CHANNEL_EXCEPTION = ThrowableUtil.unknownStackTrace(
+            new ClosedChannelException(), AbstractUnsafe.class, "flush0()");
+    //确保打开关闭频道的例外情况
+    private static final ClosedChannelException ENSURE_OPEN_CLOSED_CHANNEL_EXCEPTION = ThrowableUtil.unknownStackTrace(
+            new ClosedChannelException(), AbstractUnsafe.class, "ensureOpen(...)");
+    //链路关闭异常
+    private static final ClosedChannelException CLOSE_CLOSED_CHANNEL_EXCEPTION = ThrowableUtil.unknownStackTrace(
+            new ClosedChannelException(), AbstractUnsafe.class, "close(...)");
+    //写关闭异常
+    private static final ClosedChannelException WRITE_CLOSED_CHANNEL_EXCEPTION = ThrowableUtil.unknownStackTrace(
+            new ClosedChannelException(), AbstractUnsafe.class, "write(...)");
+    //链路尚未建立异常
+    private static final NotYetConnectedException FLUSH0_NOT_YET_CONNECTED_EXCEPTION = ThrowableUtil.unknownStackTrace(
+            new NotYetConnectedException(), AbstractUnsafe.class, "flush0()");
+    //父级channel
+    private final Channel parent;
+    //采用默认方式生成全局唯一id
+    private final ChannelId id;
+    private final Unsafe unsafe;
+    //当前channel对应的pipeline
+    private final DefaultChannelPipeline pipeline;
+    private final VoidChannelPromise unsafeVoidPromise = new VoidChannelPromise(this, false);
+    //自动关闭
+    private final CloseFuture closeFuture = new CloseFuture(this);
+	//本地socket地址
+    private volatile SocketAddress localAddress;
+    //远程socket地址
+    private volatile SocketAddress remoteAddress;
+    //当前channel注册的EventLoop
+    private volatile EventLoop eventLoop;
+    private volatile boolean registered;
+    private boolean closeInitiated;
+
+    /** Cache for the string representation of this channel */
+    private boolean strValActive;
+    private String strVal;
+...
+}
+
+```
+
+Netty基于事件驱动，当channel进行I/O操作时会产生对应的I/O事件，然后驱动事件在channelPipeline中传播，对应的ChannelHandler对事件进行拦截和处理，不关心的事件忽略。
+
+使用事件驱动的方式可以非常轻松地通过事件定义来划分事件拦截切面，方便业务的定制和功能的扩展。相比AOP，其性能更高。
+
+网络I/O操作直接调用DefaultChannelPipeline的相关方法，由DefaultChannelPipeline中对应的ChannelHandler进行逻辑处理
+
+```java
+ @Override
+    public ChannelFuture bind(SocketAddress localAddress) {
+        return pipeline.bind(localAddress);
+    }
+
+    @Override
+    public ChannelFuture connect(SocketAddress remoteAddress) {
+        return pipeline.connect(remoteAddress);
+    }
+
+    @Override
+    public ChannelFuture connect(SocketAddress remoteAddress, SocketAddress localAddress) {
+        return pipeline.connect(remoteAddress, localAddress);
+    }
+
+    @Override
+    public ChannelFuture disconnect() {
+        return pipeline.disconnect();
+    }
+
+    @Override
+    public ChannelFuture close() {
+        return pipeline.close();
+    }
+
+    @Override
+    public ChannelFuture deregister() {
+        return pipeline.deregister();
+    }
+
+    @Override
+    public Channel flush() {
+        pipeline.flush();
+        return this;
+    }
+
+    @Override
+    public ChannelFuture bind(SocketAddress localAddress, ChannelPromise promise) {
+        return pipeline.bind(localAddress, promise);
+    }
+
+    @Override
+    public ChannelFuture connect(SocketAddress remoteAddress, ChannelPromise promise) {
+        return pipeline.connect(remoteAddress, promise);
+    }
+
+    @Override
+    public ChannelFuture connect(SocketAddress remoteAddress, SocketAddress localAddress, ChannelPromise promise) {
+        return pipeline.connect(remoteAddress, localAddress, promise);
+    }
+
+    @Override
+    public ChannelFuture disconnect(ChannelPromise promise) {
+        return pipeline.disconnect(promise);
+    }
+
+    @Override
+    public ChannelFuture close(ChannelPromise promise) {
+        return pipeline.close(promise);
+    }
+
+    @Override
+    public ChannelFuture deregister(ChannelPromise promise) {
+        return pipeline.deregister(promise);
+    }
+
+    @Override
+    public Channel read() {
+        pipeline.read();
+        return this;
+    }
+
+    @Override
+    public ChannelFuture write(Object msg) {
+        return pipeline.write(msg);
+    }
+
+    @Override
+    public ChannelFuture write(Object msg, ChannelPromise promise) {
+        return pipeline.write(msg, promise);
+    }
+
+    @Override
+    public ChannelFuture writeAndFlush(Object msg) {
+        return pipeline.writeAndFlush(msg);
+    }
+
+    @Override
+    public ChannelFuture writeAndFlush(Object msg, ChannelPromise promise) {
+        return pipeline.writeAndFlush(msg, promise);
+    }
+
+    @Override
+    public ChannelPromise newPromise() {
+        return pipeline.newPromise();
+    }
+
+    @Override
+    public ChannelProgressivePromise newProgressivePromise() {
+        return pipeline.newProgressivePromise();
+    }
+
+    @Override
+    public ChannelFuture newSucceededFuture() {
+        return pipeline.newSucceededFuture();
+    }
+
+    @Override
+    public ChannelFuture newFailedFuture(Throwable cause) {
+        return pipeline.newFailedFuture(cause);
+    }
+
+```
+
+## AbstractNioChannel
+
+### 成员变量
+
+```java
+    //进行I/O操作	
+    private final SelectableChannel ch;
+    //代表了JDK SelectionKey的OP_READ
+    protected final int readInterestOp;
+   //channel注册到EventLoop返回的selectionKey
+    volatile SelectionKey selectionKey;
+    boolean readPending;
+    private final Runnable clearReadPendingRunnable = new Runnable() {
+        @Override
+        public void run() {
+            clearReadPending0();
+        }
+    };
+    private ChannelPromise connectPromise;
+	//连接超时定时器，用来检测是否超时
+    private ScheduledFuture<?> connectTimeoutFuture;
+    private SocketAddress requestedRemoteAddress;
+
+```
+
+### 源码分析
+
+#### Channel注册
+
+```java
+ @Override
+    protected void doRegister() throws Exception {
+        boolean selected = false;
+        for (;;) {
+            try {
+                selectionKey = javaChannel().register(eventLoop().unwrappedSelector(), 0, this);
+                return;
+            } catch (CancelledKeyException e) {
+                if (!selected) {
+                   //强制选择器现在选择“已取消”的SelectionKey可能仍然被缓存而不会被删除，因为尚未调用Select.select（..）操作。
+                    eventLoop().selectNow();
+                    selected = true;
+                } else {
+                    // We forced a select operation on the selector before but the SelectionKey is still cached
+                    // for whatever reason. JDK bug ?
+                    throw e;
+                }
+            }
+        }
+    }
+```
+
+注册时需要指定监听的网络操作，来表示Channel对哪几类事件感兴趣。
+
+```java
+ 	/**
+     * 读操作位
+     */
+    public static final int OP_READ = 1 << 0;
+
+    /**
+     * 写操作位
+     */
+    public static final int OP_WRITE = 1 << 2;
+
+    /**
+     * 客户端连接服务端操作
+     */
+    public static final int OP_CONNECT = 1 << 3;
+
+    /**
+     * 服务端接收客户端连接操作
+     */
+    public static final int OP_ACCEPT = 1 << 4;
+```
+
+AbstractNioChannel注册的是0，说明对任何事件都不感兴趣。仅仅完成注册操作。后续Channel接收到的网络事件通知可以从 SelectionKey中重新获取之前的附件进行处理。
+
+#### 读操作
+
+读操作之前需要设置网络操作位为读
+
+```java
+@Override
+    protected void doBeginRead() throws Exception {
+        // Channel.read() or ChannelHandlerContext.read() was called
+        final SelectionKey selectionKey = this.selectionKey;
+        //先判断Channel是否关闭，如果关闭就直接返回
+        if (!selectionKey.isValid()) {
+            return;
+        }
+
+        readPending = true;
+
+        final int interestOps = selectionKey.interestOps();
+        //说明没有设置读操作位
+        if ((interestOps & readInterestOp) == 0) {
+            //设置读操作位
+            selectionKey.interestOps(interestOps | readInterestOp);
+        }
+    }
+```
+
+### AbstractNioByteChannel
+
+```java
+@Override
+    protected void doWrite(ChannelOutboundBuffer in) throws Exception {
+        //写操作的最大循环计数，默认为16
+        int writeSpinCount = config().getWriteSpinCount();
+        do {
+            //获取信息
+            Object msg = in.current();
+            if (msg == null) {
+                // 消息发送完毕,清除写操作位
+                clearOpWrite();
+                // Directly return here so incompleteWrite(...) is not called.
+                return;
+            }
+            writeSpinCount -= doWriteInternal(in, msg);
+        } while (writeSpinCount > 0);//循环将信息写完
+		//保证消息被完整写出
+        incompleteWrite(writeSpinCount < 0);
+    }
+
+   protected final void incompleteWrite(boolean setOpWrite) {
+        // 如果没有写完，继续设置写操作位
+        if (setOpWrite) {
+            setOpWrite();
+        } else {
+            //有可能我们设置了写入OP，由NIO唤醒，因为套接字是可写的，然后
+             //使用我们的写量子 在这种情况下，我们不再需要设置写OP，因为套接字仍然是
+             //可写（据我们所知）。 我们将在下次尝试写入套接字是否可写时发现
+             //并在必要时设置写入OP。
+            clearOpWrite();
+            //稍后再次安排刷新，以便在此期间可以选择其他任务
+            eventLoop().execute(flushTask);
+        }
+    }
+ protected final void clearOpWrite() {
+        final SelectionKey key = selectionKey();
+        // Check first if the key is still valid as it may be canceled as part of the deregistration
+        // from the EventLoop
+        // See https://github.com/netty/netty/issues/2104
+        if (!key.isValid()) {
+            return;
+        }
+        final int interestOps = key.interestOps();
+        if ((interestOps & SelectionKey.OP_WRITE) != 0) {
+            key.interestOps(interestOps & ~SelectionKey.OP_WRITE);
+        }
+    }
+ private int doWriteInternal(ChannelOutboundBuffer in, Object msg) throws Exception {
+     //判断消息类型
+        if (msg instanceof ByteBuf) {
+            //强转
+            ByteBuf buf = (ByteBuf) msg;
+            //判断消息是否可读
+            if (!buf.isReadable()) {
+                //说明没有可读字节数
+                in.remove();
+                return 0;
+            }
+
+            final int localFlushedAmount = doWriteBytes(buf);
+            if (localFlushedAmount > 0) {
+                in.progress(localFlushedAmount);
+                if (!buf.isReadable()) {
+                    in.remove();
+                }
+                return 1;
+            }
+        } else if (msg instanceof FileRegion) {
+            FileRegion region = (FileRegion) msg;
+            if (region.transferred() >= region.count()) {
+                in.remove();
+                return 0;
+            }
+
+            long localFlushedAmount = doWriteFileRegion(region);
+            if (localFlushedAmount > 0) {
+                in.progress(localFlushedAmount);
+                if (region.transferred() >= region.count()) {
+                    in.remove();
+                }
+                return 1;
+            }
+        } else {
+            // Should not reach here.
+            throw new Error();
+        }
+        return WRITE_STATUS_SNDBUF_FULL;
+    }
+
+```
+
+###  NioServerSocketChannel
+
+```java
+//定义了ServerSocketChannelConfig，用于配置 ServerSocketChannel的TCP参数
+private static final ChannelMetadata METADATA = new ChannelMetadata(false, 16);
+//默认的SelectorProvider
+    private static final SelectorProvider DEFAULT_SELECTOR_PROVIDER = SelectorProvider.provider();
+```
+
+![1543913226093](netty权威指南.assets/1543913226093.png)
+
+# ChannelPipeline和ChannelHandler
+
+netty的ChannelPipeline和ChannelHandler机制类似于Servlet和Filter。是责任链模式的一种变形，主要是为了方便事件的拦截和用户业务逻辑的定制。
+
+netty的channel过滤器，将channel的数据管道抽象为ChannelPipeline，消息在ChannelPipeline中流动和传递。ChannelPipeline持有事件拦截器ChannelHandler的链表，由ChannelHandler对I/O事件进行拦截和处理，可以通过新增和删除ChannelHandler来实现对不通业务逻辑的定制。
+
+## ChannelPipeline
+
+ChannelPipeline的ChannelHandler链拦截和处理的流程
+
+```java
+         									I/O Request
+                                            via Channel or
+                                        ChannelHandlerContext
+                                                      |
+  +---------------------------------------------------+---------------+
+  |                           ChannelPipeline         |               |
+  |                                                  \|/              |
+  |    +---------------------+            +-----------+----------+    |
+  |    | Inbound Handler  N  |            | Outbound Handler  1  |    |
+  |    +----------+----------+            +-----------+----------+    |
+  |              /|\                                  |               |
+  |               |                                  \|/              |
+  |    +----------+----------+            +-----------+----------+    |
+  |    | Inbound Handler N-1 |            | Outbound Handler  2  |    |
+  |    +----------+----------+            +-----------+----------+    |
+  |              /|\                                  .               |
+  |               .                                   .               |
+  | ChannelHandlerContext.fireIN_EVT() ChannelHandlerContext.OUT_EVT()|
+  |        [ method call]                       [method call]         |
+  |               .                                   .               |
+  |               .                                  \|/              |
+  |    +----------+----------+            +-----------+----------+    |
+  |    | Inbound Handler  2  |            | Outbound Handler M-1 |    |
+  |    +----------+----------+            +-----------+----------+    |
+  |              /|\                                  |               |
+  |               |                                  \|/              |
+  |    +----------+----------+            +-----------+----------+    |
+  |    | Inbound Handler  1  |            | Outbound Handler  M  |    |
+  |    +----------+----------+            +-----------+----------+    |
+  |              /|\                                  |               |
+  +---------------+-----------------------------------+---------------+
+                  |                                  \|/
+  +---------------+-----------------------------------+---------------+
+  |               |                                   |               |
+  |       [ Socket.read() ]                    [ Socket.write() ]     |
+  |                                                                   |
+  |  Netty Internal I/O Threads (Transport Implementation)            |
+  +-------------------------------------------------------------------+
+```
+
+* 底层的SocketChannel read()方法读取ByteBuf，出发ChannelRead事件，由I/O线程NioEventLoop调用ChannelPipeline的fireChannelRead(Object msg)方法，将消息(ByteBuf)传出到ChannelPipeline中。
+* 消息依次呗HeadHandler、ChannelHandler1、ChannelHandler2···TailHandler拦截和处理。在此过程中任何ChannelHandler都可以中断当前的流程，结束消息的传递。
+* 调用ChannelHandlerContext的write方法发送消息，消息从TailHandler开始，最终被添加到消息发送缓冲区中等待刷新和发送。在此过程中也可以中断消息的传递，例如当编码失败是，就需要中断流程，构造异常的Future返回。
+
+Netty中的事件分为Inbound和Outbound事件。inbound事件通常由I/O线程出发，例如TCP链路的建立事件、链路关闭事件、读事件、异常通知事件等。
+
+出发inbound事件的方法:
+
+
+
