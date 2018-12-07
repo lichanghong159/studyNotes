@@ -2022,3 +2022,207 @@ JMM定义了8中操作来完成主内存和工作内存变量的访问：
 
 
 
+# Netty高可靠性设计
+
+## 网络通信类故障
+
+### 客户端连接超时
+
+创建Nio客户端时，配置连接超时参数
+
+```java
+Bootstrap b = new Bootstrap();
+            b.group(group).channel(NioSocketChannel.class)
+                    .option(ChannelOption.TCP_NODELAY, true)
+                	//设置超时时间
+                    .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 3000)
+                    .handler(new ChannelInitializer<SocketChannel>() {
+                        @Override
+                        public void initChannel(SocketChannel ch)
+                                throws Exception {
+                            ch.pipeline().addLast(
+                                    new NettyMessageDecoder(1024 * 1024, 4, 4));
+                            ch.pipeline().addLast("MessageEncoder",
+                                    new NettyMessageEncoder());
+                            ch.pipeline().addLast("readTimeoutHandler",
+                                    new ReadTimeoutHandler(50));
+                            ch.pipeline().addLast("LoginAuthHandler",
+                                    new LoginAuthReqHandler());
+                            ch.pipeline().addLast("HeartBeatHandler",
+                                    new HeartBeatReqHandler());
+                        }
+                    });
+```
+
+### 通信对端强制关闭连接
+
+Netty服务端会关闭和客户端的TCP连接，并且释放连接语柄
+
+正常连接
+
+![1544150862474](netty权威指南.assets/1544150862474.png)
+
+模拟客户端宕机
+
+![1544150900363](netty权威指南.assets/1544150900363.png)
+
+![1544150910627](netty权威指南.assets/1544150910627.png)
+
+### 链路关闭
+
+当连接被对方合法关闭后，被关闭的SocketChannel会处于就绪状态，SocketChannel的read操作返回值为-1.
+
+```java
+  io.netty.channel.nio.AbstractNioByteChannel.NioByteUnsafe#read
+```
+
+如果SocketChannel设置为非阻塞，read操作可能有三个返回值:
+
+* 大于0：表示读到了字节数
+* 等于0：没有读到字节数，可能TCP处于Keep-Alive状态，接收到的是TCP握手信息
+* -1：连接已经被对方关闭
+
+己方或对方主动关闭连接，不属于异常场景，不会产生Exception事件通知Pipeline
+
+### 定制I/O故障
+
+一般场景下，底层网络故障时，应该有底层的NIO框架负责释放资源，处理异常。上层业务应用不需要关系处理细节。
+
+在一些特殊的场景下，用户可能需要感知这些异常，并对异常进行定制处理。例如：
+
+* 客户端重连
+* 缓存消息重发
+* 接口日志中详细记录故障信息
+* 运维相关功能，例如：告警、出发邮件/短信等。
+
+## 链路的有效性检测
+
+必须周期性的对链路进行有效性检测
+
+心跳检测机制分为三个层面
+
+* TCP层面上的心跳检测，即TCP的Keep-Alive机制，它的作用域是整个TCP协议栈。
+* 协议层的心跳检测，主要存在于长连接协议中。
+* 应用层的心跳检测，由各业务产品通过约定的方式定时给对方发送心跳信息。
+
+## Reactor线程保护
+
+### 异常处理要谨慎
+
+```java
+io.netty.channel.nio.NioEventLoop#run 
+protected void run() {
+        for (;;) {
+            try {
+               //省略代码
+            } catch (Throwable t) {
+                handleLoopException(t);
+            }
+      
+            try {
+                if (isShuttingDown()) {
+                    closeAll();
+                    if (confirmShutdown()) {
+                        return;
+                    }
+                }
+            } catch (Throwable t) {
+                handleLoopException(t);
+            }
+        }
+    }
+    private static void handleLoopException(Throwable t) {
+        logger.warn("Unexpected exception in the selector loop.", t);
+
+        // Prevent possible consecutive immediate failures that lead to
+        // excessive CPU consumption.
+        try {
+            Thread.sleep(1000);
+        } catch (InterruptedException e) {
+            // Ignore.
+        }
+    }
+```
+
+捕获Throwable异常后，即便发送了异常，线程也不会跑飞，它休眠1秒，放置死循环导致的异常绕接。然后继续恢复执行。这样处理的核心理念是：
+
+* 某个消息的异常，不应该导致整条链路的可不用。
+* 某条链路不可用，不应该导致其他链路不可用。
+* 某个进程不可用，不应导致其他集群节点不可用。
+
+### 避免NIO BUG
+
+Nio类的epoll bug，会导致Selector空轮询，IO线程CPU100%
+
+Netty解决策略:
+
+1. 根据该BUG的特征，首先政策该BUG示范发生
+2. 将问题Selector上注册的Channel转移到新建的Selector上
+3. 关闭老的Selector，使用新建的Selector替换
+
+```java
+io.netty.channel.nio.NioEventLoop#select
+```
+
+## 内存保护
+
+NIO通信的内存保护主要集中在一下几点：
+
+* 链路总数的控制：每条链路都包含接收和发送缓冲区，链路个数太多容易导致内存溢出。
+* 单个缓冲区上限控制：防止非法长度或者消息过大导致内存溢出。
+* 缓冲区内存释放：防止因为缓冲区使用不当导致的内存泄漏。
+* NIO消息发送队列长度上限控制
+
+### 缓冲区的内存泄漏保护
+
+Netty对于实现了AbstractReferenceCountedByteBuf的ByteBuf，对内存申请、使用和释放的时候Netty都会自动进行引用计数检测，防止非法使用内存。
+
+### 缓冲区溢出保护
+
+1. 容量预分配，在实际的读写过程中如果不够再扩展
+2. 根据协议消息长度创建缓冲区
+
+## 流量整形
+
+[流量整形](https://en.wikipedia.org/wiki/Traffic_shaping)：是一种主动调整流量输出速率的措施。
+
+Netty中流量整形有两个作用：
+
+1. 防止上游网元性能不均衡导致下游网元被压垮，业务流程中断。
+2. 防止由于通讯模块接收消息过快，后端业务线程处理不及时导致的“撑死”问题。
+
+### 全局流量整形
+
+作用范围是进程级的。
+
+可以通过参数设置：报文的接受速率、报文的发送速率、整形周期。
+
+```java
+io.netty.handler.traffic.GlobalChannelTrafficShapingHandler#GlobalChannelTrafficShapingHandler
+  public GlobalChannelTrafficShapingHandler(ScheduledExecutorService executor,
+            long writeGlobalLimit, long readGlobalLimit,
+            long writeChannelLimit, long readChannelLimit,
+            long checkInterval, long maxTime) {
+        super(writeGlobalLimit, readGlobalLimit, checkInterval, maxTime);
+        createGlobalTrafficCounter(executor);
+        this.writeChannelLimit = writeChannelLimit;
+        this.readChannelLimit = readChannelLimit;
+    }
+```
+
+### 链路级流量整形
+
+```java
+io.netty.handler.traffic.ChannelTrafficShapingHandler
+```
+
+## 优雅停机接口
+
+Java的优雅停机通常通过注册JDK的ShutdownHoot来实现，当系统接收到退出指令后，首先标记系统处于退出状态，不在接受新的消息，然后将挤压的消息处理完，最后调用资源回收接口将资源销毁，最后各线程退出执行。
+
+通常优雅退出有个时间限制，例如30S，如果到达执行时间仍然没有完成退出前的操作，则由监控脚本直接
+
+`kill -9 pid`,强制退出。
+
+
+
