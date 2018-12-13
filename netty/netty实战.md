@@ -574,5 +574,2069 @@ JDK 的 `InputStream `定义了` mark(int readlimit)`和 `reset()`方法，这�
 
 ![1544688082216](netty实战.assets/1544688082216.png)
 
+调用`clear()`比调用`discardReadBytes()`轻量的多，它只是重置索引，不会发生内存复制。
 
+### 查找操作
+
+最简单的是使用`io.netty.buffer.ByteBuf#indexOf`，复杂的操作可以通过forEachByte()。
+
+```java
+  public abstract int forEachByte(ByteProcessor processor);
+
+    public abstract int forEachByte(int index, int length, ByteProcessor processor);
+    public abstract int forEachByteDesc(ByteProcessor processor);
+    public abstract int forEachByteDesc(int index, int length, ByteProcessor processor);
+```
+
+```java
+public interface ByteProcessor {
+    /**
+     * A {@link ByteProcessor} which finds the first appearance of a specific byte.
+     */
+    class IndexOfProcessor implements ByteProcessor {
+        private final byte byteToFind;
+
+        public IndexOfProcessor(byte byteToFind) {
+            this.byteToFind = byteToFind;
+        }
+
+        @Override
+        public boolean process(byte value) {
+            return value != byteToFind;
+        }
+    }
+
+    /**
+     * A {@link ByteProcessor} which finds the first appearance which is not of a specific byte.
+     */
+    class IndexNotOfProcessor implements ByteProcessor {
+        private final byte byteToNotFind;
+
+        public IndexNotOfProcessor(byte byteToNotFind) {
+            this.byteToNotFind = byteToNotFind;
+        }
+
+        @Override
+        public boolean process(byte value) {
+            return value == byteToNotFind;
+        }
+    }
+
+    /**
+     * Aborts on a {@code NUL (0x00)}.
+     */
+    ByteProcessor FIND_NUL = new IndexOfProcessor((byte) 0);
+
+    /**
+     * Aborts on a non-{@code NUL (0x00)}.
+     */
+    ByteProcessor FIND_NON_NUL = new IndexNotOfProcessor((byte) 0);
+
+    /**
+     * Aborts on a {@code CR ('\r')}.
+     */
+    ByteProcessor FIND_CR = new IndexOfProcessor(CARRIAGE_RETURN);
+
+    /**
+     * Aborts on a non-{@code CR ('\r')}.
+     */
+    ByteProcessor FIND_NON_CR = new IndexNotOfProcessor(CARRIAGE_RETURN);
+
+    /**
+     * Aborts on a {@code LF ('\n')}.
+     */
+    ByteProcessor FIND_LF = new IndexOfProcessor(LINE_FEED);
+
+    /**
+     * Aborts on a non-{@code LF ('\n')}.
+     */
+    ByteProcessor FIND_NON_LF = new IndexNotOfProcessor(LINE_FEED);
+
+    /**
+     * Aborts on a semicolon {@code (';')}.
+     */
+    ByteProcessor FIND_SEMI_COLON = new IndexOfProcessor((byte) ';');
+
+    /**
+     * Aborts on a comma {@code (',')}.
+     */
+    ByteProcessor FIND_COMMA = new IndexOfProcessor((byte) ',');
+
+    /**
+     * Aborts on a ascii space character ({@code ' '}).
+     */
+    ByteProcessor FIND_ASCII_SPACE = new IndexOfProcessor(SPACE);
+
+    /**
+     * Aborts on a {@code CR ('\r')} or a {@code LF ('\n')}.
+     */
+    ByteProcessor FIND_CRLF = new ByteProcessor() {
+        @Override
+        public boolean process(byte value) {
+            return value != CARRIAGE_RETURN && value != LINE_FEED;
+        }
+    };
+
+    /**
+     * Aborts on a byte which is neither a {@code CR ('\r')} nor a {@code LF ('\n')}.
+     */
+    ByteProcessor FIND_NON_CRLF = new ByteProcessor() {
+        @Override
+        public boolean process(byte value) {
+            return value == CARRIAGE_RETURN || value == LINE_FEED;
+        }
+    };
+
+    /**
+     * Aborts on a linear whitespace (a ({@code ' '} or a {@code '\t'}).
+     */
+    ByteProcessor FIND_LINEAR_WHITESPACE = new ByteProcessor() {
+        @Override
+        public boolean process(byte value) {
+            return value != SPACE && value != HTAB;
+        }
+    };
+
+    /**
+     * Aborts on a byte which is not a linear whitespace (neither {@code ' '} nor {@code '\t'}).
+     */
+    ByteProcessor FIND_NON_LINEAR_WHITESPACE = new ByteProcessor() {
+        @Override
+        public boolean process(byte value) {
+            return value == SPACE || value == HTAB;
+        }
+    };
+
+    /**
+     * @return {@code true} if the processor wants to continue the loop and handle the next byte in the buffer.
+     *         {@code false} if the processor wants to stop handling bytes and abort the loop.
+     */
+    boolean process(byte value) throws Exception;
+}
+
+```
+
+### 派生缓冲区
+
+派生缓冲区为 ByteBuf 提供了以专门的方式来呈现其内容的视图。这类视图是通过以下方法被创建的：
+
+```java
+    public abstract ByteBuf slice();
+    public abstract ByteBuf retainedSlice();
+    public abstract ByteBuf slice(int index, int length);
+    public abstract ByteBuf retainedSlice(int index, int length);
+	public abstract ByteBuf duplicate();
+	io.netty.buffer.Unpooled#wrappedUnmodifiableBuffer(io.netty.buffer.ByteBuf...)
+        
+```
+
+每个方法都会返回一个新的ByteBuf 实例，数据是共享的。它具有自己的读索引、写索引和标记索引。如果修改了它的内容，对应的源实例也会被修改。
+
+```java
+  		Charset utf8 = Charset.forName("UTF-8");
+        //源缓冲区
+        ByteBuf buf = Unpooled.copiedBuffer("Netty in Action rocks!", utf8);
+        //派生缓冲区
+        ByteBuf sliced = buf.slice();
+        System.out.println(sliced.toString(utf8));
+        //修改派生缓冲区
+        sliced.setByte(0, (byte)'J');
+        System.out.println(buf.toString(utf8));
+        System.out.println(sliced.toString(utf8));
+```
+
+![1544691091568](netty实战.assets/1544691091568.png)
+
+**ByteBuf 复制** 如果需要一个现有缓冲区的真实副本，请使用 copy()或者 copy(int, int)方法。不同于派生缓冲区，由这个调用所返回的 ByteBuf 拥有独立的数据副本。
+
+### 读写操作
+
+有两种类别的读/写操作:
+
+* getXXX()和setXXX()，从给定的索引开始，并且保持索引不变。
+* readXXX()和 writeXXX()操作，从给定的索引开始，索引会发生变化
+
+#### get()操作
+
+```java
+ /**
+     * Gets a boolean at the specified absolute (@code index) in this buffer.
+     * This method does not modify the {@code readerIndex} or {@code writerIndex}
+     * of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 1} is greater than {@code this.capacity}
+     */
+    public abstract boolean getBoolean(int index);
+
+    /**
+     * Gets a byte at the specified absolute {@code index} in this buffer.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 1} is greater than {@code this.capacity}
+     */
+    public abstract byte  getByte(int index);
+
+    /**
+     * Gets an unsigned byte at the specified absolute {@code index} in this
+     * buffer.  This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 1} is greater than {@code this.capacity}
+     */
+    public abstract short getUnsignedByte(int index);
+
+    /**
+     * Gets a 16-bit short integer at the specified absolute {@code index} in
+     * this buffer.  This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract short getShort(int index);
+
+    /**
+     * Gets a 16-bit short integer at the specified absolute {@code index} in
+     * this buffer in Little Endian Byte Order. This method does not modify
+     * {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract short getShortLE(int index);
+
+    /**
+     * Gets an unsigned 16-bit short integer at the specified absolute
+     * {@code index} in this buffer.  This method does not modify
+     * {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract int getUnsignedShort(int index);
+
+    /**
+     * Gets an unsigned 16-bit short integer at the specified absolute
+     * {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract int getUnsignedShortLE(int index);
+
+    /**
+     * Gets a 24-bit medium integer at the specified absolute {@code index} in
+     * this buffer.  This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 3} is greater than {@code this.capacity}
+     */
+    public abstract int   getMedium(int index);
+
+    /**
+     * Gets a 24-bit medium integer at the specified absolute {@code index} in
+     * this buffer in the Little Endian Byte Order. This method does not
+     * modify {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 3} is greater than {@code this.capacity}
+     */
+    public abstract int getMediumLE(int index);
+
+    /**
+     * Gets an unsigned 24-bit medium integer at the specified absolute
+     * {@code index} in this buffer.  This method does not modify
+     * {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 3} is greater than {@code this.capacity}
+     */
+    public abstract int   getUnsignedMedium(int index);
+
+    /**
+     * Gets an unsigned 24-bit medium integer at the specified absolute
+     * {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 3} is greater than {@code this.capacity}
+     */
+    public abstract int   getUnsignedMediumLE(int index);
+
+    /**
+     * Gets a 32-bit integer at the specified absolute {@code index} in
+     * this buffer.  This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract int   getInt(int index);
+
+    /**
+     * Gets a 32-bit integer at the specified absolute {@code index} in
+     * this buffer with Little Endian Byte Order. This method does not
+     * modify {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract int   getIntLE(int index);
+
+    /**
+     * Gets an unsigned 32-bit integer at the specified absolute {@code index}
+     * in this buffer.  This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract long  getUnsignedInt(int index);
+
+    /**
+     * Gets an unsigned 32-bit integer at the specified absolute {@code index}
+     * in this buffer in Little Endian Byte Order. This method does not
+     * modify {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract long  getUnsignedIntLE(int index);
+
+    /**
+     * Gets a 64-bit long integer at the specified absolute {@code index} in
+     * this buffer.  This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public abstract long  getLong(int index);
+
+    /**
+     * Gets a 64-bit long integer at the specified absolute {@code index} in
+     * this buffer in Little Endian Byte Order. This method does not
+     * modify {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public abstract long  getLongLE(int index);
+
+    /**
+     * Gets a 2-byte UTF-16 character at the specified absolute
+     * {@code index} in this buffer.  This method does not modify
+     * {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract char  getChar(int index);
+
+    /**
+     * Gets a 32-bit floating point number at the specified absolute
+     * {@code index} in this buffer.  This method does not modify
+     * {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract float getFloat(int index);
+
+    /**
+     * Gets a 32-bit floating point number at the specified absolute
+     * {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public float getFloatLE(int index) {
+        return Float.intBitsToFloat(getIntLE(index));
+    }
+
+    /**
+     * Gets a 64-bit floating point number at the specified absolute
+     * {@code index} in this buffer.  This method does not modify
+     * {@code readerIndex} or {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public abstract double getDouble(int index);
+
+    /**
+     * Gets a 64-bit floating point number at the specified absolute
+     * {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or
+     * {@code writerIndex} of this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public double getDoubleLE(int index) {
+        return Double.longBitsToDouble(getLongLE(index));
+    }
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the specified absolute {@code index} until the destination becomes
+     * non-writable.  This method is basically same with
+     * {@link #getBytes(int, ByteBuf, int, int)}, except that this
+     * method increases the {@code writerIndex} of the destination by the
+     * number of the transferred bytes while
+     * {@link #getBytes(int, ByteBuf, int, int)} does not.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * the source buffer (i.e. {@code this}).
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + dst.writableBytes} is greater than
+     *            {@code this.capacity}
+     */
+    public abstract ByteBuf getBytes(int index, ByteBuf dst);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the specified absolute {@code index}.  This method is basically same
+     * with {@link #getBytes(int, ByteBuf, int, int)}, except that this
+     * method increases the {@code writerIndex} of the destination by the
+     * number of the transferred bytes while
+     * {@link #getBytes(int, ByteBuf, int, int)} does not.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * the source buffer (i.e. {@code this}).
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0},
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}, or
+     *         if {@code length} is greater than {@code dst.writableBytes}
+     */
+    public abstract ByteBuf getBytes(int index, ByteBuf dst, int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex}
+     * of both the source (i.e. {@code this}) and the destination.
+     *
+     * @param dstIndex the first index of the destination
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0},
+     *         if the specified {@code dstIndex} is less than {@code 0},
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}, or
+     *         if {@code dstIndex + length} is greater than
+     *            {@code dst.capacity}
+     */
+    public abstract ByteBuf getBytes(int index, ByteBuf dst, int dstIndex, int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + dst.length} is greater than
+     *            {@code this.capacity}
+     */
+    public abstract ByteBuf getBytes(int index, byte[] dst);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex}
+     * of this buffer.
+     *
+     * @param dstIndex the first index of the destination
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0},
+     *         if the specified {@code dstIndex} is less than {@code 0},
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}, or
+     *         if {@code dstIndex + length} is greater than
+     *            {@code dst.length}
+     */
+    public abstract ByteBuf getBytes(int index, byte[] dst, int dstIndex, int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the specified absolute {@code index} until the destination's position
+     * reaches its limit.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer while the destination's {@code position} will be increased.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + dst.remaining()} is greater than
+     *            {@code this.capacity}
+     */
+    public abstract ByteBuf getBytes(int index, ByteBuffer dst);
+
+    /**
+     * Transfers this buffer's data to the specified stream starting at the
+     * specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}
+     * @throws IOException
+     *         if the specified stream threw an exception during I/O
+     */
+    public abstract ByteBuf getBytes(int index, OutputStream out, int length) throws IOException;
+
+    /**
+     * Transfers this buffer's data to the specified channel starting at the
+     * specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes written out to the specified channel
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int getBytes(int index, GatheringByteChannel out, int length) throws IOException;
+
+    /**
+     * Transfers this buffer's data starting at the specified absolute {@code index}
+     * to the specified channel starting at the given file position.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer. This method does not modify the channel's position.
+     *
+     * @param position the file position at which the transfer is to begin
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes written out to the specified channel
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int getBytes(int index, FileChannel out, long position, int length) throws IOException;
+
+    /**
+     * Gets a {@link CharSequence} with the given length at the given index.
+     *
+     * @param length the length to read
+     * @param charset that should be used
+     * @return the sequence
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     */
+    public abstract CharSequence getCharSequence(int index, int length, Charset charset);
+```
+
+#### set()操作
+
+```java
+ /**
+     * Sets the specified boolean at the specified absolute {@code index} in this
+     * buffer.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 1} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setBoolean(int index, boolean value);
+
+    /**
+     * Sets the specified byte at the specified absolute {@code index} in this
+     * buffer.  The 24 high-order bits of the specified value are ignored.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 1} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setByte(int index, int value);
+
+    /**
+     * Sets the specified 16-bit short integer at the specified absolute
+     * {@code index} in this buffer.  The 16 high-order bits of the specified
+     * value are ignored.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setShort(int index, int value);
+
+    /**
+     * Sets the specified 16-bit short integer at the specified absolute
+     * {@code index} in this buffer with the Little Endian Byte Order.
+     * The 16 high-order bits of the specified value are ignored.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setShortLE(int index, int value);
+
+    /**
+     * Sets the specified 24-bit medium integer at the specified absolute
+     * {@code index} in this buffer.  Please note that the most significant
+     * byte is ignored in the specified value.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 3} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setMedium(int index, int value);
+
+    /**
+     * Sets the specified 24-bit medium integer at the specified absolute
+     * {@code index} in this buffer in the Little Endian Byte Order.
+     * Please note that the most significant byte is ignored in the
+     * specified value.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 3} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setMediumLE(int index, int value);
+
+    /**
+     * Sets the specified 32-bit integer at the specified absolute
+     * {@code index} in this buffer.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setInt(int index, int value);
+
+    /**
+     * Sets the specified 32-bit integer at the specified absolute
+     * {@code index} in this buffer with Little Endian byte order
+     * .
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setIntLE(int index, int value);
+
+    /**
+     * Sets the specified 64-bit long integer at the specified absolute
+     * {@code index} in this buffer.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setLong(int index, long value);
+
+    /**
+     * Sets the specified 64-bit long integer at the specified absolute
+     * {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setLongLE(int index, long value);
+
+    /**
+     * Sets the specified 2-byte UTF-16 character at the specified absolute
+     * {@code index} in this buffer.
+     * The 16 high-order bits of the specified value are ignored.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 2} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setChar(int index, int value);
+
+    /**
+     * Sets the specified 32-bit floating-point number at the specified
+     * absolute {@code index} in this buffer.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setFloat(int index, float value);
+
+    /**
+     * Sets the specified 32-bit floating-point number at the specified
+     * absolute {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 4} is greater than {@code this.capacity}
+     */
+    public ByteBuf setFloatLE(int index, float value) {
+        return setIntLE(index, Float.floatToRawIntBits(value));
+    }
+
+    /**
+     * Sets the specified 64-bit floating-point number at the specified
+     * absolute {@code index} in this buffer.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setDouble(int index, double value);
+
+    /**
+     * Sets the specified 64-bit floating-point number at the specified
+     * absolute {@code index} in this buffer in Little Endian Byte Order.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         {@code index + 8} is greater than {@code this.capacity}
+     */
+    public ByteBuf setDoubleLE(int index, double value) {
+        return setLongLE(index, Double.doubleToRawLongBits(value));
+    }
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the specified absolute {@code index} until the source buffer becomes
+     * unreadable.  This method is basically same with
+     * {@link #setBytes(int, ByteBuf, int, int)}, except that this
+     * method increases the {@code readerIndex} of the source buffer by
+     * the number of the transferred bytes while
+     * {@link #setBytes(int, ByteBuf, int, int)} does not.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * the source buffer (i.e. {@code this}).
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + src.readableBytes} is greater than
+     *            {@code this.capacity}
+     */
+    public abstract ByteBuf setBytes(int index, ByteBuf src);
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the specified absolute {@code index}.  This method is basically same
+     * with {@link #setBytes(int, ByteBuf, int, int)}, except that this
+     * method increases the {@code readerIndex} of the source buffer by
+     * the number of the transferred bytes while
+     * {@link #setBytes(int, ByteBuf, int, int)} does not.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * the source buffer (i.e. {@code this}).
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0},
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}, or
+     *         if {@code length} is greater than {@code src.readableBytes}
+     */
+    public abstract ByteBuf setBytes(int index, ByteBuf src, int length);
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex}
+     * of both the source (i.e. {@code this}) and the destination.
+     *
+     * @param srcIndex the first index of the source
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0},
+     *         if the specified {@code srcIndex} is less than {@code 0},
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}, or
+     *         if {@code srcIndex + length} is greater than
+     *            {@code src.capacity}
+     */
+    public abstract ByteBuf setBytes(int index, ByteBuf src, int srcIndex, int length);
+
+    /**
+     * Transfers the specified source array's data to this buffer starting at
+     * the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + src.length} is greater than
+     *            {@code this.capacity}
+     */
+    public abstract ByteBuf setBytes(int index, byte[] src);
+
+    /**
+     * Transfers the specified source array's data to this buffer starting at
+     * the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0},
+     *         if the specified {@code srcIndex} is less than {@code 0},
+     *         if {@code index + length} is greater than
+     *            {@code this.capacity}, or
+     *         if {@code srcIndex + length} is greater than {@code src.length}
+     */
+    public abstract ByteBuf setBytes(int index, byte[] src, int srcIndex, int length);
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the specified absolute {@code index} until the source buffer's position
+     * reaches its limit.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + src.remaining()} is greater than
+     *            {@code this.capacity}
+     */
+    public abstract ByteBuf setBytes(int index, ByteBuffer src);
+
+    /**
+     * Transfers the content of the specified source stream to this buffer
+     * starting at the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @return the actual number of bytes read in from the specified channel.
+     *         {@code -1} if the specified channel is closed.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than {@code this.capacity}
+     * @throws IOException
+     *         if the specified stream threw an exception during I/O
+     */
+    public abstract int setBytes(int index, InputStream in, int length) throws IOException;
+
+    /**
+     * Transfers the content of the specified source channel to this buffer
+     * starting at the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes read in from the specified channel.
+     *         {@code -1} if the specified channel is closed.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than {@code this.capacity}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int setBytes(int index, ScatteringByteChannel in, int length) throws IOException;
+
+    /**
+     * Transfers the content of the specified source channel starting at the given file position
+     * to this buffer starting at the specified absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer. This method does not modify the channel's position.
+     *
+     * @param position the file position at which the transfer is to begin
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes read in from the specified channel.
+     *         {@code -1} if the specified channel is closed.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than {@code this.capacity}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int setBytes(int index, FileChannel in, long position, int length) throws IOException;
+
+    /**
+     * Fills this buffer with <tt>NUL (0x00)</tt> starting at the specified
+     * absolute {@code index}.
+     * This method does not modify {@code readerIndex} or {@code writerIndex} of
+     * this buffer.
+     *
+     * @param length the number of <tt>NUL</tt>s to write to the buffer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code index} is less than {@code 0} or
+     *         if {@code index + length} is greater than {@code this.capacity}
+     */
+    public abstract ByteBuf setZero(int index, int length);
+
+    /**
+     * Writes the specified {@link CharSequence} at the current {@code writerIndex} and increases
+     * the {@code writerIndex} by the written bytes.
+     *
+     * @param index on which the sequence should be written
+     * @param sequence to write
+     * @param charset that should be used.
+     * @return the written number of bytes.
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is not large enough to write the whole sequence
+     */
+    public abstract int setCharSequence(int index, CharSequence sequence, Charset charset);
+```
+
+#### read()操作
+
+```java
+ /**
+     * Gets a boolean at the current {@code readerIndex} and increases
+     * the {@code readerIndex} by {@code 1} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 1}
+     */
+    public abstract boolean readBoolean();
+
+    /**
+     * Gets a byte at the current {@code readerIndex} and increases
+     * the {@code readerIndex} by {@code 1} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 1}
+     */
+    public abstract byte  readByte();
+
+    /**
+     * Gets an unsigned byte at the current {@code readerIndex} and increases
+     * the {@code readerIndex} by {@code 1} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 1}
+     */
+    public abstract short readUnsignedByte();
+
+    /**
+     * Gets a 16-bit short integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 2} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 2}
+     */
+    public abstract short readShort();
+
+    /**
+     * Gets a 16-bit short integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 2} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 2}
+     */
+    public abstract short readShortLE();
+
+    /**
+     * Gets an unsigned 16-bit short integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 2} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 2}
+     */
+    public abstract int   readUnsignedShort();
+
+    /**
+     * Gets an unsigned 16-bit short integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 2} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 2}
+     */
+    public abstract int   readUnsignedShortLE();
+
+    /**
+     * Gets a 24-bit medium integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 3} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 3}
+     */
+    public abstract int   readMedium();
+
+    /**
+     * Gets a 24-bit medium integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the
+     * {@code readerIndex} by {@code 3} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 3}
+     */
+    public abstract int   readMediumLE();
+
+    /**
+     * Gets an unsigned 24-bit medium integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 3} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 3}
+     */
+    public abstract int   readUnsignedMedium();
+
+    /**
+     * Gets an unsigned 24-bit medium integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 3} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 3}
+     */
+    public abstract int   readUnsignedMediumLE();
+
+    /**
+     * Gets a 32-bit integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 4}
+     */
+    public abstract int   readInt();
+
+    /**
+     * Gets a 32-bit integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 4}
+     */
+    public abstract int   readIntLE();
+
+    /**
+     * Gets an unsigned 32-bit integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 4}
+     */
+    public abstract long  readUnsignedInt();
+
+    /**
+     * Gets an unsigned 32-bit integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 4}
+     */
+    public abstract long  readUnsignedIntLE();
+
+    /**
+     * Gets a 64-bit integer at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 8} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 8}
+     */
+    public abstract long  readLong();
+
+    /**
+     * Gets a 64-bit integer at the current {@code readerIndex}
+     * in the Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 8} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 8}
+     */
+    public abstract long  readLongLE();
+
+    /**
+     * Gets a 2-byte UTF-16 character at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 2} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 2}
+     */
+    public abstract char  readChar();
+
+    /**
+     * Gets a 32-bit floating point number at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 4}
+     */
+    public abstract float readFloat();
+
+    /**
+     * Gets a 32-bit floating point number at the current {@code readerIndex}
+     * in Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 4}
+     */
+    public float readFloatLE() {
+        return Float.intBitsToFloat(readIntLE());
+    }
+
+    /**
+     * Gets a 64-bit floating point number at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by {@code 8} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 8}
+     */
+    public abstract double readDouble();
+
+    /**
+     * Gets a 64-bit floating point number at the current {@code readerIndex}
+     * in Little Endian Byte Order and increases the {@code readerIndex}
+     * by {@code 8} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.readableBytes} is less than {@code 8}
+     */
+    public double readDoubleLE() {
+        return Double.longBitsToDouble(readLongLE());
+    }
+
+    /**
+     * Transfers this buffer's data to a newly created buffer starting at
+     * the current {@code readerIndex} and increases the {@code readerIndex}
+     * by the number of the transferred bytes (= {@code length}).
+     * The returned buffer's {@code readerIndex} and {@code writerIndex} are
+     * {@code 0} and {@code length} respectively.
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @return the newly created buffer which contains the transferred bytes
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     */
+    public abstract ByteBuf readBytes(int length);
+
+    /**
+     * Returns a new slice of this buffer's sub-region starting at the current
+     * {@code readerIndex} and increases the {@code readerIndex} by the size
+     * of the new slice (= {@code length}).
+     * <p>
+     * Also be aware that this method will NOT call {@link #retain()} and so the
+     * reference count will NOT be increased.
+     *
+     * @param length the size of the new slice
+     *
+     * @return the newly created slice
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     */
+    public abstract ByteBuf readSlice(int length);
+
+    /**
+     * Returns a new retained slice of this buffer's sub-region starting at the current
+     * {@code readerIndex} and increases the {@code readerIndex} by the size
+     * of the new slice (= {@code length}).
+     * <p>
+     * Note that this method returns a {@linkplain #retain() retained} buffer unlike {@link #readSlice(int)}.
+     * This method behaves similarly to {@code readSlice(...).retain()} except that this method may return
+     * a buffer implementation that produces less garbage.
+     *
+     * @param length the size of the new slice
+     *
+     * @return the newly created slice
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     */
+    public abstract ByteBuf readRetainedSlice(int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the current {@code readerIndex} until the destination becomes
+     * non-writable, and increases the {@code readerIndex} by the number of the
+     * transferred bytes.  This method is basically same with
+     * {@link #readBytes(ByteBuf, int, int)}, except that this method
+     * increases the {@code writerIndex} of the destination by the number of
+     * the transferred bytes while {@link #readBytes(ByteBuf, int, int)}
+     * does not.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code dst.writableBytes} is greater than
+     *            {@code this.readableBytes}
+     */
+    public abstract ByteBuf readBytes(ByteBuf dst);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the current {@code readerIndex} and increases the {@code readerIndex}
+     * by the number of the transferred bytes (= {@code length}).  This method
+     * is basically same with {@link #readBytes(ByteBuf, int, int)},
+     * except that this method increases the {@code writerIndex} of the
+     * destination by the number of the transferred bytes (= {@code length})
+     * while {@link #readBytes(ByteBuf, int, int)} does not.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes} or
+     *         if {@code length} is greater than {@code dst.writableBytes}
+     */
+    public abstract ByteBuf readBytes(ByteBuf dst, int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the current {@code readerIndex} and increases the {@code readerIndex}
+     * by the number of the transferred bytes (= {@code length}).
+     *
+     * @param dstIndex the first index of the destination
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code dstIndex} is less than {@code 0},
+     *         if {@code length} is greater than {@code this.readableBytes}, or
+     *         if {@code dstIndex + length} is greater than
+     *            {@code dst.capacity}
+     */
+    public abstract ByteBuf readBytes(ByteBuf dst, int dstIndex, int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the current {@code readerIndex} and increases the {@code readerIndex}
+     * by the number of the transferred bytes (= {@code dst.length}).
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code dst.length} is greater than {@code this.readableBytes}
+     */
+    public abstract ByteBuf readBytes(byte[] dst);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the current {@code readerIndex} and increases the {@code readerIndex}
+     * by the number of the transferred bytes (= {@code length}).
+     *
+     * @param dstIndex the first index of the destination
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code dstIndex} is less than {@code 0},
+     *         if {@code length} is greater than {@code this.readableBytes}, or
+     *         if {@code dstIndex + length} is greater than {@code dst.length}
+     */
+    public abstract ByteBuf readBytes(byte[] dst, int dstIndex, int length);
+
+    /**
+     * Transfers this buffer's data to the specified destination starting at
+     * the current {@code readerIndex} until the destination's position
+     * reaches its limit, and increases the {@code readerIndex} by the
+     * number of the transferred bytes.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code dst.remaining()} is greater than
+     *            {@code this.readableBytes}
+     */
+    public abstract ByteBuf readBytes(ByteBuffer dst);
+
+    /**
+     * Transfers this buffer's data to the specified stream starting at the
+     * current {@code readerIndex}.
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     * @throws IOException
+     *         if the specified stream threw an exception during I/O
+     */
+    public abstract ByteBuf readBytes(OutputStream out, int length) throws IOException;
+
+    /**
+     * Transfers this buffer's data to the specified stream starting at the
+     * current {@code readerIndex}.
+     *
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes written out to the specified channel
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int readBytes(GatheringByteChannel out, int length) throws IOException;
+
+    /**
+     * Gets a {@link CharSequence} with the given length at the current {@code readerIndex}
+     * and increases the {@code readerIndex} by the given length.
+     *
+     * @param length the length to read
+     * @param charset that should be used
+     * @return the sequence
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     */
+    public abstract CharSequence readCharSequence(int length, Charset charset);
+
+    /**
+     * Transfers this buffer's data starting at the current {@code readerIndex}
+     * to the specified channel starting at the given file position.
+     * This method does not modify the channel's position.
+     *
+     * @param position the file position at which the transfer is to begin
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes written out to the specified channel
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.readableBytes}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int readBytes(FileChannel out, long position, int length) throws IOException;
+```
+
+
+
+#### write()操作
+
+```java
+/**
+     * Sets the specified boolean at the current {@code writerIndex}
+     * and increases the {@code writerIndex} by {@code 1} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 1}
+     */
+    public abstract ByteBuf writeBoolean(boolean value);
+
+    /**
+     * Sets the specified byte at the current {@code writerIndex}
+     * and increases the {@code writerIndex} by {@code 1} in this buffer.
+     * The 24 high-order bits of the specified value are ignored.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 1}
+     */
+    public abstract ByteBuf writeByte(int value);
+
+    /**
+     * Sets the specified 16-bit short integer at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by {@code 2}
+     * in this buffer.  The 16 high-order bits of the specified value are ignored.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 2}
+     */
+    public abstract ByteBuf writeShort(int value);
+
+    /**
+     * Sets the specified 16-bit short integer in the Little Endian Byte
+     * Order at the current {@code writerIndex} and increases the
+     * {@code writerIndex} by {@code 2} in this buffer.
+     * The 16 high-order bits of the specified value are ignored.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 2}
+     */
+    public abstract ByteBuf writeShortLE(int value);
+
+    /**
+     * Sets the specified 24-bit medium integer at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by {@code 3}
+     * in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 3}
+     */
+    public abstract ByteBuf writeMedium(int value);
+
+    /**
+     * Sets the specified 24-bit medium integer at the current
+     * {@code writerIndex} in the Little Endian Byte Order and
+     * increases the {@code writerIndex} by {@code 3} in this
+     * buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 3}
+     */
+    public abstract ByteBuf writeMediumLE(int value);
+
+    /**
+     * Sets the specified 32-bit integer at the current {@code writerIndex}
+     * and increases the {@code writerIndex} by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 4}
+     */
+    public abstract ByteBuf writeInt(int value);
+
+    /**
+     * Sets the specified 32-bit integer at the current {@code writerIndex}
+     * in the Little Endian Byte Order and increases the {@code writerIndex}
+     * by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 4}
+     */
+    public abstract ByteBuf writeIntLE(int value);
+
+    /**
+     * Sets the specified 64-bit long integer at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by {@code 8}
+     * in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 8}
+     */
+    public abstract ByteBuf writeLong(long value);
+
+    /**
+     * Sets the specified 64-bit long integer at the current
+     * {@code writerIndex} in the Little Endian Byte Order and
+     * increases the {@code writerIndex} by {@code 8}
+     * in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 8}
+     */
+    public abstract ByteBuf writeLongLE(long value);
+
+    /**
+     * Sets the specified 2-byte UTF-16 character at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by {@code 2}
+     * in this buffer.  The 16 high-order bits of the specified value are ignored.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 2}
+     */
+    public abstract ByteBuf writeChar(int value);
+
+    /**
+     * Sets the specified 32-bit floating point number at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by {@code 4}
+     * in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 4}
+     */
+    public abstract ByteBuf writeFloat(float value);
+
+    /**
+     * Sets the specified 32-bit floating point number at the current
+     * {@code writerIndex} in Little Endian Byte Order and increases
+     * the {@code writerIndex} by {@code 4} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 4}
+     */
+    public ByteBuf writeFloatLE(float value) {
+        return writeIntLE(Float.floatToRawIntBits(value));
+    }
+
+    /**
+     * Sets the specified 64-bit floating point number at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by {@code 8}
+     * in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 8}
+     */
+    public abstract ByteBuf writeDouble(double value);
+
+    /**
+     * Sets the specified 64-bit floating point number at the current
+     * {@code writerIndex} in Little Endian Byte Order and increases
+     * the {@code writerIndex} by {@code 8} in this buffer.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is less than {@code 8}
+     */
+    public ByteBuf writeDoubleLE(double value) {
+        return writeLongLE(Double.doubleToRawLongBits(value));
+    }
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the current {@code writerIndex} until the source buffer becomes
+     * unreadable, and increases the {@code writerIndex} by the number of
+     * the transferred bytes.  This method is basically same with
+     * {@link #writeBytes(ByteBuf, int, int)}, except that this method
+     * increases the {@code readerIndex} of the source buffer by the number of
+     * the transferred bytes while {@link #writeBytes(ByteBuf, int, int)}
+     * does not.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code src.readableBytes} is greater than
+     *            {@code this.writableBytes}
+     */
+    public abstract ByteBuf writeBytes(ByteBuf src);
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the current {@code writerIndex} and increases the {@code writerIndex}
+     * by the number of the transferred bytes (= {@code length}).  This method
+     * is basically same with {@link #writeBytes(ByteBuf, int, int)},
+     * except that this method increases the {@code readerIndex} of the source
+     * buffer by the number of the transferred bytes (= {@code length}) while
+     * {@link #writeBytes(ByteBuf, int, int)} does not.
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.writableBytes} or
+     *         if {@code length} is greater then {@code src.readableBytes}
+     */
+    public abstract ByteBuf writeBytes(ByteBuf src, int length);
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the current {@code writerIndex} and increases the {@code writerIndex}
+     * by the number of the transferred bytes (= {@code length}).
+     *
+     * @param srcIndex the first index of the source
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code srcIndex} is less than {@code 0},
+     *         if {@code srcIndex + length} is greater than
+     *            {@code src.capacity}, or
+     *         if {@code length} is greater than {@code this.writableBytes}
+     */
+    public abstract ByteBuf writeBytes(ByteBuf src, int srcIndex, int length);
+
+    /**
+     * Transfers the specified source array's data to this buffer starting at
+     * the current {@code writerIndex} and increases the {@code writerIndex}
+     * by the number of the transferred bytes (= {@code src.length}).
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code src.length} is greater than {@code this.writableBytes}
+     */
+    public abstract ByteBuf writeBytes(byte[] src);
+
+    /**
+     * Transfers the specified source array's data to this buffer starting at
+     * the current {@code writerIndex} and increases the {@code writerIndex}
+     * by the number of the transferred bytes (= {@code length}).
+     *
+     * @param srcIndex the first index of the source
+     * @param length   the number of bytes to transfer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if the specified {@code srcIndex} is less than {@code 0},
+     *         if {@code srcIndex + length} is greater than
+     *            {@code src.length}, or
+     *         if {@code length} is greater than {@code this.writableBytes}
+     */
+    public abstract ByteBuf writeBytes(byte[] src, int srcIndex, int length);
+
+    /**
+     * Transfers the specified source buffer's data to this buffer starting at
+     * the current {@code writerIndex} until the source buffer's position
+     * reaches its limit, and increases the {@code writerIndex} by the
+     * number of the transferred bytes.
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code src.remaining()} is greater than
+     *            {@code this.writableBytes}
+     */
+    public abstract ByteBuf writeBytes(ByteBuffer src);
+
+    /**
+     * Transfers the content of the specified stream to this buffer
+     * starting at the current {@code writerIndex} and increases the
+     * {@code writerIndex} by the number of the transferred bytes.
+     *
+     * @param length the number of bytes to transfer
+     *
+     * @return the actual number of bytes read in from the specified stream
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.writableBytes}
+     * @throws IOException
+     *         if the specified stream threw an exception during I/O
+     */
+    public abstract int  writeBytes(InputStream in, int length) throws IOException;
+
+    /**
+     * Transfers the content of the specified channel to this buffer
+     * starting at the current {@code writerIndex} and increases the
+     * {@code writerIndex} by the number of the transferred bytes.
+     *
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes read in from the specified channel
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.writableBytes}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int writeBytes(ScatteringByteChannel in, int length) throws IOException;
+
+    /**
+     * Transfers the content of the specified channel starting at the given file position
+     * to this buffer starting at the current {@code writerIndex} and increases the
+     * {@code writerIndex} by the number of the transferred bytes.
+     * This method does not modify the channel's position.
+     *
+     * @param position the file position at which the transfer is to begin
+     * @param length the maximum number of bytes to transfer
+     *
+     * @return the actual number of bytes read in from the specified channel
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.writableBytes}
+     * @throws IOException
+     *         if the specified channel threw an exception during I/O
+     */
+    public abstract int writeBytes(FileChannel in, long position, int length) throws IOException;
+
+    /**
+     * Fills this buffer with <tt>NUL (0x00)</tt> starting at the current
+     * {@code writerIndex} and increases the {@code writerIndex} by the
+     * specified {@code length}.
+     *
+     * @param length the number of <tt>NUL</tt>s to write to the buffer
+     *
+     * @throws IndexOutOfBoundsException
+     *         if {@code length} is greater than {@code this.writableBytes}
+     */
+    public abstract ByteBuf writeZero(int length);
+
+    /**
+     * Writes the specified {@link CharSequence} at the current {@code writerIndex} and increases
+     * the {@code writerIndex} by the written bytes.
+     * in this buffer.
+     *
+     * @param sequence to write
+     * @param charset that should be used
+     * @return the written number of bytes
+     * @throws IndexOutOfBoundsException
+     *         if {@code this.writableBytes} is not large enough to write the whole sequence
+     */
+    public abstract int writeCharSequence(CharSequence sequence, Charset charset);
+```
+
+### 更多的操作
+
+* `isReadable()` :如果至少有一个字节可供读取，则返回 true
+* `isWritable()`: 如果至少有一个字节可被写入，则返回 true
+* `readableBytes()`: 返回可被读取的字节数
+* `writableBytes()`: 返回可被写入的字节数
+* `capacity()` :返回 ByteBuf 可容纳的字节数。在此之后，它会尝试再次扩展直到达到 maxCapacity()
+* `maxCapacity()` 返回 ByteBuf 可以容纳的最大字节数
+* `hasArray()` 如果 ByteBuf 由一个字节数组支撑，则返回 true
+* `array()` 如果 ByteBuf 由一个字节数组支撑则返回该数组；否则，它将抛出一个UnsupportedOperationException 异常
+
+## ByteBufHolder
+
+ByteBufHolder 也为 Netty 的高级特性提供了支持，如缓冲区池化，其中可以从池中借用 ByteBuf，并且在需要时自动释放。
+
+```java
+public interface ByteBufHolder extends ReferenceCounted {
+
+    /**
+     * 返回由这个 ByteBufHolder 所持有的 ByteBuf {@link ByteBufHolder}.
+     */
+    ByteBuf content();
+
+    /**
+     * 返回这个 ByteBufHolder 的一个深拷贝，包括一个其所包含的 ByteBuf 的非共享拷贝 {@link ByteBufHolder}.
+     */
+    ByteBufHolder copy();
+
+    /**
+     * 返回这个 ByteBufHolder 的一个浅拷贝，包括一个其所包含的 ByteBuf 的共享拷贝
+     */
+    ByteBufHolder duplicate();
+
+    /**
+     * 
+     *此方法返回保留的副本
+     * @see ByteBuf#retainedDuplicate()
+     */
+    ByteBufHolder retainedDuplicate();
+
+    /**
+     * 返回一个新的{@link ByteBufHolder}，其中包含指定的{@code content}。
+     */
+    ByteBufHolder replace(ByteBuf content);
+
+    @Override
+    ByteBufHolder retain();
+
+    @Override
+    ByteBufHolder retain(int increment);
+
+    @Override
+    ByteBufHolder touch();
+
+    @Override
+    ByteBufHolder touch(Object hint);
+}
+```
+
+## ByteBuf 分配
+
+### ByteBufAllocator
+
+为了降低分配和释放内存的开销，Netty 通过 interface ByteBufAllocator 实现了（ByteBuf 的）池化，它可以用来分配我们所描述过的任意类型的 ByteBuf 实例。
+
+![1544692840876](netty实战.assets/1544692840876.png)
+
+![](netty实战.assets/ByteBufAllocator.png)
+
+![1544692994268](netty实战.assets/1544692994268.png)
+
+
+
+#### AbstractByteBufAllocator
+
+```java
+  public abstract class AbstractByteBufAllocator implements ByteBufAllocator {
+    static final int DEFAULT_INITIAL_CAPACITY = 256;//默认初始化容量
+    static final int DEFAULT_MAX_CAPACITY = Integer.MAX_VALUE;//默认最大容量
+    static final int DEFAULT_MAX_COMPONENTS = 16;
+    static final int CALCULATE_THRESHOLD = 1048576 * 4; // 4 MiB page
+
+    static {
+        ResourceLeakDetector.addExclusions(AbstractByteBufAllocator.class, "toLeakAwareBuffer");
+    }
+
+    protected static ByteBuf toLeakAwareBuffer(ByteBuf buf) {
+        ResourceLeakTracker<ByteBuf> leak;
+        switch (ResourceLeakDetector.getLevel()) {
+            case SIMPLE:
+                leak = AbstractByteBuf.leakDetector.track(buf);
+                if (leak != null) {
+                    buf = new SimpleLeakAwareByteBuf(buf, leak);
+                }
+                break;
+            case ADVANCED:
+            case PARANOID:
+                leak = AbstractByteBuf.leakDetector.track(buf);
+                if (leak != null) {
+                    buf = new AdvancedLeakAwareByteBuf(buf, leak);
+                }
+                break;
+            default:
+                break;
+        }
+        return buf;
+    }
+
+    protected static CompositeByteBuf toLeakAwareBuffer(CompositeByteBuf buf) {
+        ResourceLeakTracker<ByteBuf> leak;
+        switch (ResourceLeakDetector.getLevel()) {
+            case SIMPLE:
+                leak = AbstractByteBuf.leakDetector.track(buf);
+                if (leak != null) {
+                    buf = new SimpleLeakAwareCompositeByteBuf(buf, leak);
+                }
+                break;
+            case ADVANCED:
+            case PARANOID:
+                leak = AbstractByteBuf.leakDetector.track(buf);
+                if (leak != null) {
+                    buf = new AdvancedLeakAwareCompositeByteBuf(buf, leak);
+                }
+                break;
+            default:
+                break;
+        }
+        return buf;
+    }
+
+    private final boolean directByDefault;
+    private final ByteBuf emptyBuf;
+
+    /**
+     * Instance use heap buffers by default
+     */
+    protected AbstractByteBufAllocator() {
+        this(false);
+    }
+
+    /**
+     * Create new instance
+     *
+     * @param preferDirect {@code true} if {@link #buffer(int)} should try to allocate a direct buffer rather than
+     *                     a heap buffer
+     */
+    protected AbstractByteBufAllocator(boolean preferDirect) {
+        directByDefault = preferDirect && PlatformDependent.hasUnsafe();
+        emptyBuf = new EmptyByteBuf(this);
+    }
+
+    @Override
+    public ByteBuf buffer() {
+        if (directByDefault) {
+            return directBuffer();
+        }
+        return heapBuffer();
+    }
+
+    @Override
+    public ByteBuf buffer(int initialCapacity) {
+        if (directByDefault) {
+            return directBuffer(initialCapacity);
+        }
+        return heapBuffer(initialCapacity);
+    }
+
+    @Override
+    public ByteBuf buffer(int initialCapacity, int maxCapacity) {
+        if (directByDefault) {
+            return directBuffer(initialCapacity, maxCapacity);
+        }
+        return heapBuffer(initialCapacity, maxCapacity);
+    }
+
+    @Override
+    public ByteBuf ioBuffer() {
+        if (PlatformDependent.hasUnsafe()) {
+            return directBuffer(DEFAULT_INITIAL_CAPACITY);
+        }
+        return heapBuffer(DEFAULT_INITIAL_CAPACITY);
+    }
+
+    @Override
+    public ByteBuf ioBuffer(int initialCapacity) {
+        if (PlatformDependent.hasUnsafe()) {
+            return directBuffer(initialCapacity);
+        }
+        return heapBuffer(initialCapacity);
+    }
+
+    @Override
+    public ByteBuf ioBuffer(int initialCapacity, int maxCapacity) {
+        if (PlatformDependent.hasUnsafe()) {
+            return directBuffer(initialCapacity, maxCapacity);
+        }
+        return heapBuffer(initialCapacity, maxCapacity);
+    }
+
+    @Override
+    public ByteBuf heapBuffer() {
+        return heapBuffer(DEFAULT_INITIAL_CAPACITY, DEFAULT_MAX_CAPACITY);
+    }
+
+    @Override
+    public ByteBuf heapBuffer(int initialCapacity) {
+        return heapBuffer(initialCapacity, DEFAULT_MAX_CAPACITY);
+    }
+
+    @Override
+    public ByteBuf heapBuffer(int initialCapacity, int maxCapacity) {
+        if (initialCapacity == 0 && maxCapacity == 0) {
+            return emptyBuf;
+        }
+        validate(initialCapacity, maxCapacity);
+        return newHeapBuffer(initialCapacity, maxCapacity);
+    }
+
+    @Override
+    public ByteBuf directBuffer() {
+        return directBuffer(DEFAULT_INITIAL_CAPACITY, DEFAULT_MAX_CAPACITY);
+    }
+
+    @Override
+    public ByteBuf directBuffer(int initialCapacity) {
+        return directBuffer(initialCapacity, DEFAULT_MAX_CAPACITY);
+    }
+
+    @Override
+    public ByteBuf directBuffer(int initialCapacity, int maxCapacity) {
+        if (initialCapacity == 0 && maxCapacity == 0) {
+            return emptyBuf;
+        }
+        validate(initialCapacity, maxCapacity);
+        return newDirectBuffer(initialCapacity, maxCapacity);
+    }
+
+    @Override
+    public CompositeByteBuf compositeBuffer() {
+        if (directByDefault) {
+            return compositeDirectBuffer();
+        }
+        return compositeHeapBuffer();
+    }
+
+    @Override
+    public CompositeByteBuf compositeBuffer(int maxNumComponents) {
+        if (directByDefault) {
+            return compositeDirectBuffer(maxNumComponents);
+        }
+        return compositeHeapBuffer(maxNumComponents);
+    }
+
+    @Override
+    public CompositeByteBuf compositeHeapBuffer() {
+        return compositeHeapBuffer(DEFAULT_MAX_COMPONENTS);
+    }
+
+    @Override
+    public CompositeByteBuf compositeHeapBuffer(int maxNumComponents) {
+        return toLeakAwareBuffer(new CompositeByteBuf(this, false, maxNumComponents));
+    }
+
+    @Override
+    public CompositeByteBuf compositeDirectBuffer() {
+        return compositeDirectBuffer(DEFAULT_MAX_COMPONENTS);
+    }
+
+    @Override
+    public CompositeByteBuf compositeDirectBuffer(int maxNumComponents) {
+        return toLeakAwareBuffer(new CompositeByteBuf(this, true, maxNumComponents));
+    }
+
+    private static void validate(int initialCapacity, int maxCapacity) {
+        if (initialCapacity < 0) {
+            throw new IllegalArgumentException("initialCapacity: " + initialCapacity + " (expected: 0+)");
+        }
+        if (initialCapacity > maxCapacity) {
+            throw new IllegalArgumentException(String.format(
+                    "initialCapacity: %d (expected: not greater than maxCapacity(%d)",
+                    initialCapacity, maxCapacity));
+        }
+    }
+
+    /**
+     * Create a heap {@link ByteBuf} with the given initialCapacity and maxCapacity.
+     */
+    protected abstract ByteBuf newHeapBuffer(int initialCapacity, int maxCapacity);
+
+    /**
+     * Create a direct {@link ByteBuf} with the given initialCapacity and maxCapacity.
+     */
+    protected abstract ByteBuf newDirectBuffer(int initialCapacity, int maxCapacity);
+
+    @Override
+    public String toString() {
+        return StringUtil.simpleClassName(this) + "(directByDefault: " + directByDefault + ')';
+    }
+
+    @Override
+    public int calculateNewCapacity(int minNewCapacity, int maxCapacity) {
+        if (minNewCapacity < 0) {
+            throw new IllegalArgumentException("minNewCapacity: " + minNewCapacity + " (expected: 0+)");
+        }
+        if (minNewCapacity > maxCapacity) {
+            throw new IllegalArgumentException(String.format(
+                    "minNewCapacity: %d (expected: not greater than maxCapacity(%d)",
+                    minNewCapacity, maxCapacity));
+        }
+        final int threshold = CALCULATE_THRESHOLD; // 4 MiB page
+
+        if (minNewCapacity == threshold) {
+            return threshold;
+        }
+
+        // If over threshold, do not double but just increase by threshold.
+        if (minNewCapacity > threshold) {
+            int newCapacity = minNewCapacity / threshold * threshold;
+            if (newCapacity > maxCapacity - threshold) {
+                newCapacity = maxCapacity;
+            } else {
+                newCapacity += threshold;
+            }
+            return newCapacity;
+        }
+
+        // Not over threshold. Double up to 4 MiB, starting from 64.
+        int newCapacity = 64;
+        while (newCapacity < minNewCapacity) {
+            newCapacity <<= 1;
+        }
+
+        return Math.min(newCapacity, maxCapacity);
+    }
+}
+
+```
+
+Netty提供了两种`ByteBufAllocator`的实现：`PooledByteBufAllocator`和`UnpooledByteBufAllocator`。
+
+* `PooledByteBufAllocator`池化了`ByteBuf`,以提高性能并最大限度地减少内存碎片。
+* `UnpooledByteBufAllocator`没有池化，每次都会创建新的`ByteBuf`实例。
+
+Netty默认使用`PooledByteBufAllocator`,可以通过`ChannelConfig`指定不同的分配器。
+
+### Unpooled 缓冲区
+
+可能某些情况下，你未能获取一个到 ByteBufAllocator 的引用。对于这种情况，Netty 提供了一个简单的称为 Unpooled 的工具类，它提供了静态的辅助方法来创建未池化的 ByteBuf实例。
+
+![1544695465293](netty实战.assets/1544695465293.png)
 
