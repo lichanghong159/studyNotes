@@ -2640,3 +2640,19 @@ Netty默认使用`PooledByteBufAllocator`,可以通过`ChannelConfig`指定不�
 
 ![1544695465293](netty实战.assets/1544695465293.png)
 
+### ByteBufUtil 类
+
+ByteBufUtil 提供了用于操作 ByteBuf 的静态的辅助方法。因为这个 API 是通用的，并且和池化无关，所以这些方法已然在分配类的外部实现。
+
+![](netty实战.assets/ByteBufUtil.png)
+
+## 引用计数
+
+`引用计数`是一种通过在某个对象所持有的资源不再被其他对象引用时释放该对象所持有资源来优化内存使用和性能的技术。
+
+Netty中通过`ReferenceCounted`接口来记录引用。
+
+![](netty实战.assets/ReferenceCounted.png)
+
+一个 ReferenceCounted 实现的实例将通常以活动的引用计数为 1 作为开始。只要引用计数大于 0，就能保证对象不会被释放。当活动引用的数量减少到 0 时，该实例就会被释放。
+
